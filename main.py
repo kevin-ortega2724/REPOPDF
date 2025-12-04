@@ -6,16 +6,20 @@ Autor: Para uso docente universitario
 import sys
 import os
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QPushButton, QListWidget, QFileDialog,
+                             QHBoxLayout, QPushButton, QListView, QFileDialog,
                              QMessageBox, QInputDialog, QLabel, QSpinBox, QGroupBox)
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtGui import QStandardItemModel, QStandardItem, QIcon, QPixmap
 from PyPDF2 import PdfReader, PdfWriter
+import fitz  # PyMuPDF
 
 
 class PDFManager(QMainWindow):
     def __init__(self):
         super().__init__()
         self.pdf_files = []
+        self.thumbnail_cache = {}  # Cache para miniaturas
+        self.view_mode = 'list'  # 'list' o 'grid'
         self.init_ui()
         
     def init_ui(self):
@@ -48,13 +52,34 @@ class PDFManager(QMainWindow):
         load_group.setLayout(load_layout)
         main_layout.addWidget(load_group)
         
-        # Lista de archivos
+        # Lista de archivos con selector de vista
+        list_header_layout = QHBoxLayout()
         list_label = QLabel('Archivos cargados:')
-        main_layout.addWidget(list_label)
+        list_header_layout.addWidget(list_label)
         
-        self.file_list = QListWidget()
-        self.file_list.setSelectionMode(QListWidget.ExtendedSelection)
-        main_layout.addWidget(self.file_list)
+        # Botones para cambiar vista
+        self.btn_list_view = QPushButton('📋 Lista')
+        self.btn_list_view.setCheckable(True)
+        self.btn_list_view.setChecked(True)
+        self.btn_list_view.clicked.connect(lambda: self.change_view_mode('list'))
+        list_header_layout.addWidget(self.btn_list_view)
+        
+        self.btn_grid_view = QPushButton('🔲 Cuadrícula')
+        self.btn_grid_view.setCheckable(True)
+        self.btn_grid_view.clicked.connect(lambda: self.change_view_mode('grid'))
+        list_header_layout.addWidget(self.btn_grid_view)
+        
+        list_header_layout.addStretch()
+        main_layout.addLayout(list_header_layout)
+        
+        # Lista/Vista de archivos
+        self.file_list_view = QListView()
+        self.file_list_view.setSelectionMode(QListView.ExtendedSelection)
+        self.file_model = QStandardItemModel()
+        self.file_list_view.setModel(self.file_model)
+        self.file_list_view.setViewMode(QListView.ListMode)
+        self.file_list_view.setIconSize(QSize(150, 200))  # Tamaño de miniaturas
+        main_layout.addWidget(self.file_list_view)
         
         # Botones de organización
         org_group = QGroupBox('Organizar')
@@ -103,6 +128,77 @@ class PDFManager(QMainWindow):
         
         ops_group.setLayout(ops_layout)
         main_layout.addWidget(ops_group)
+    
+    def generate_thumbnail(self, pdf_path):
+        """Genera una miniatura de la primera página del PDF"""
+        if pdf_path in self.thumbnail_cache:
+            return self.thumbnail_cache[pdf_path]
+        
+        try:
+            # Abrir PDF con PyMuPDF
+            doc = fitz.open(pdf_path)
+            if len(doc) == 0:
+                return None
+            
+            # Renderizar primera página
+            page = doc[0]
+            zoom = 0.5  # Factor de zoom para la miniatura
+            mat = fitz.Matrix(zoom, zoom)
+            pix = page.get_pixmap(matrix=mat)
+            
+            # Convertir a QPixmap
+            img_data = pix.tobytes("ppm")
+            pixmap = QPixmap()
+            pixmap.loadFromData(img_data)
+            
+            doc.close()
+            
+            # Guardar en cache
+            self.thumbnail_cache[pdf_path] = pixmap
+            return pixmap
+        except Exception as e:
+            print(f"Error generando miniatura: {e}")
+            return None
+    
+    def change_view_mode(self, mode):
+        """Cambia entre vista de lista y cuadrícula"""
+        self.view_mode = mode
+        
+        if mode == 'list':
+            self.file_list_view.setViewMode(QListView.ListMode)
+            self.file_list_view.setIconSize(QSize(32, 32))
+            self.btn_list_view.setChecked(True)
+            self.btn_grid_view.setChecked(False)
+        else:  # grid
+            self.file_list_view.setViewMode(QListView.IconMode)
+            self.file_list_view.setIconSize(QSize(150, 200))
+            self.file_list_view.setGridSize(QSize(180, 220))
+            self.file_list_view.setSpacing(10)
+            self.btn_list_view.setChecked(False)
+            self.btn_grid_view.setChecked(True)
+        
+        # Refrescar la vista
+        self.refresh_view()
+    
+    def refresh_view(self):
+        """Refresca la vista con los archivos actuales"""
+        self.file_model.clear()
+        
+        for pdf_file in self.pdf_files:
+            item = QStandardItem(os.path.basename(pdf_file))
+            
+            # Generar miniatura si está en modo cuadrícula o si queremos mostrarla siempre
+            thumbnail = self.generate_thumbnail(pdf_file)
+            if thumbnail:
+                # Escalar miniatura según el modo de vista
+                if self.view_mode == 'grid':
+                    scaled_thumbnail = thumbnail.scaled(150, 200, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                else:
+                    scaled_thumbnail = thumbnail.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                item.setIcon(QIcon(scaled_thumbnail))
+            
+            item.setToolTip(pdf_file)  # Mostrar ruta completa en tooltip
+            self.file_model.appendRow(item)
         
     def add_pdfs(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -115,41 +211,61 @@ class PDFManager(QMainWindow):
         for file in files:
             if file not in self.pdf_files:
                 self.pdf_files.append(file)
-                self.file_list.addItem(os.path.basename(file))
+        
+        self.refresh_view()
     
     def clear_list(self):
         self.pdf_files.clear()
-        self.file_list.clear()
+        self.thumbnail_cache.clear()
+        self.file_model.clear()
     
     def move_up(self):
-        current_row = self.file_list.currentRow()
+        current_index = self.file_list_view.currentIndex()
+        if not current_index.isValid():
+            return
+        
+        current_row = current_index.row()
         if current_row > 0:
             self.pdf_files[current_row], self.pdf_files[current_row - 1] = \
                 self.pdf_files[current_row - 1], self.pdf_files[current_row]
             
-            item = self.file_list.takeItem(current_row)
-            self.file_list.insertItem(current_row - 1, item)
-            self.file_list.setCurrentRow(current_row - 1)
+            self.refresh_view()
+            # Restaurar selección
+            new_index = self.file_model.index(current_row - 1, 0)
+            self.file_list_view.setCurrentIndex(new_index)
     
     def move_down(self):
-        current_row = self.file_list.currentRow()
+        current_index = self.file_list_view.currentIndex()
+        if not current_index.isValid():
+            return
+        
+        current_row = current_index.row()
         if current_row < len(self.pdf_files) - 1 and current_row >= 0:
             self.pdf_files[current_row], self.pdf_files[current_row + 1] = \
                 self.pdf_files[current_row + 1], self.pdf_files[current_row]
             
-            item = self.file_list.takeItem(current_row)
-            self.file_list.insertItem(current_row + 1, item)
-            self.file_list.setCurrentRow(current_row + 1)
+            self.refresh_view()
+            # Restaurar selección
+            new_index = self.file_model.index(current_row + 1, 0)
+            self.file_list_view.setCurrentIndex(new_index)
     
     def remove_selected(self):
-        selected_items = self.file_list.selectedItems()
-        if not selected_items:
+        selected_indexes = self.file_list_view.selectedIndexes()
+        if not selected_indexes:
             return
         
-        for item in selected_items:
-            row = self.file_list.row(item)
-            self.file_list.takeItem(row)
-            self.pdf_files.pop(row)
+        # Obtener índices ordenados de mayor a menor para evitar problemas al eliminar
+        rows_to_remove = sorted([idx.row() for idx in selected_indexes], reverse=True)
+        
+        for row in rows_to_remove:
+            if 0 <= row < len(self.pdf_files):
+                pdf_file = self.pdf_files[row]
+                # Limpiar cache de miniatura si existe
+                if pdf_file in self.thumbnail_cache:
+                    del self.thumbnail_cache[pdf_file]
+                self.pdf_files.pop(row)
+        
+        self.refresh_view()
     
     def merge_pdfs(self):
         if len(self.pdf_files) < 2:
@@ -189,12 +305,13 @@ class PDFManager(QMainWindow):
                               'Debe cargar al menos un archivo PDF.')
             return
         
-        if len(self.file_list.selectedItems()) != 1:
+        selected_indexes = self.file_list_view.selectedIndexes()
+        if len(selected_indexes) != 1:
             QMessageBox.warning(self, 'Advertencia', 
                               'Seleccione exactamente un PDF para separar.')
             return
         
-        selected_row = self.file_list.currentRow()
+        selected_row = selected_indexes[0].row()
         pdf_file = self.pdf_files[selected_row]
         
         output_dir = QFileDialog.getExistingDirectory(
@@ -229,12 +346,13 @@ class PDFManager(QMainWindow):
                               'Debe cargar al menos un archivo PDF.')
             return
         
-        if len(self.file_list.selectedItems()) != 1:
+        selected_indexes = self.file_list_view.selectedIndexes()
+        if len(selected_indexes) != 1:
             QMessageBox.warning(self, 'Advertencia', 
                               'Seleccione exactamente un PDF para extraer páginas.')
             return
         
-        selected_row = self.file_list.currentRow()
+        selected_row = selected_indexes[0].row()
         pdf_file = self.pdf_files[selected_row]
         
         try:
@@ -284,12 +402,13 @@ class PDFManager(QMainWindow):
             QMessageBox.critical(self, 'Error', f'Error al extraer páginas: {str(e)}')
     
     def show_pdf_info(self):
-        if len(self.file_list.selectedItems()) != 1:
+        selected_indexes = self.file_list_view.selectedIndexes()
+        if len(selected_indexes) != 1:
             QMessageBox.warning(self, 'Advertencia', 
                               'Seleccione exactamente un PDF para ver información.')
             return
         
-        selected_row = self.file_list.currentRow()
+        selected_row = selected_indexes[0].row()
         pdf_file = self.pdf_files[selected_row]
         
         try:
